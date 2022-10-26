@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-
+from dataset import SimulationData
 
 
 class MLP(nn.Module):
@@ -26,6 +26,8 @@ class MLP(nn.Module):
             output = self.relu3(hidden3)
             return output
 
+dataset = SimulationData()
+print(dataset)
 stencil_size = 20
 input_features = torch.rand(stencil_size, 11)
 rotation_inv_features =input_features[:,4:]
