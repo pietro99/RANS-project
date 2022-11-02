@@ -5,6 +5,7 @@ import tqdm
 
 class MLP(nn.Module):
         def __init__(self, input_size, hidden_size1, hidden_size2, output_size):
+            
             super(MLP, self).__init__()
             self.input_size = input_size
             self.hidden_size1  = hidden_size1
@@ -31,20 +32,26 @@ class MLP(nn.Module):
 class WeightedSum(nn.Module):
     def __init__(self):
         super(WeightedSum, self).__init__()
+        self.G_split_size = 5
     
     def forward(self, G, input_features):
-        G_split_size = 4
-        G_ = G[:, :G_split_size]
-        L = torch.matmul(torch.transpose(G, 1,0), input_features)
-        L_ = torch.matmul(torch.transpose(input_features, 1, 0), G_)
+        #print(f'if: {input_features[0]}')
+        G_ = G[:, :self.G_split_size]
+        #print(G_.shape[0])
+        L = (torch.matmul(torch.transpose(G, 1,0), input_features) / G.shape[0])
+        L_ = (torch.matmul(torch.transpose(input_features, 1, 0), G_) / G.shape[0])
         D = torch.matmul(L, L_)
+        #print(f'D: {D}')
+        #print()
         return D
-
+    
 class MainNet(nn.Module):
     def __init__(self, input_size1, hidden_size1_1,hidden_size1_2, output_size1,
                  input_size2, hidden_size2_1, hidden_size2_2, output_size2):
         
         super(MainNet, self).__init__()
+        self.invariant_features_indeces = [4,5,6,7]
+
         self.embeddingNetwork = MLP(input_size1,hidden_size1_1, hidden_size1_2, output_size1)
         self.weightedSum = WeightedSum()
         self.flatten = nn.Flatten(1,-1)
@@ -53,16 +60,17 @@ class MainNet(nn.Module):
         
    
     def forward(self, x):
-        norm_data = torch.nn.functional.normalize(x)
-        #print(f'input values: {x}\n shape: {x.shape}')
-        embedding_output = self.embeddingNetwork(norm_data)
-        #print(f'embedding output: {embedding_output}\n shape: {embedding_output.shape}')
-
-        #weighted_output = self.weightedSum(embedding_output, x)
-        #print(f'weighted output: {weighted_output}\n shape: {weighted_output.shape}')
+        #print(f'input values: {x[0]}\n shape: {x.shape}')
+        invariant_x = x[:, self.invariant_features_indeces]
         
-        weighted_output_flattened = torch.flatten(embedding_output)
-        #print(f'weighted flattened: {weighted_output_flattened}\n shape: {weighted_output_flattened.shape}')
+        embedding_output = self.embeddingNetwork(invariant_x)
+        #print(f' shape: {embedding_output.shape}')
+
+        weighted_output = self.weightedSum(embedding_output, x)
+        #print(f' shape: {weighted_output.shape}')
+        
+        weighted_output_flattened = torch.flatten(weighted_output)
+        #print(f' shape: {weighted_output_flattened.shape}')
         
         fitting_output = self.fittingNetwork(weighted_output_flattened)
         #print(f'fitting output: {fitting_output}\n shape: {fitting_output.shape}')

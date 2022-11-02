@@ -88,10 +88,7 @@ def calculateAngle(vector):
 def checkPoint(coordinate,center,l1l2):
     a = LA.norm(l1l2[0])
     b = LA.norm(l1l2[1])
-    if a == 0 or b == 0: 
-        print(f'a: {a} | b: {b}')
-        print(center)
-        print(l1l2)
+
     angle = angleGrad(l1l2[0], [1,0])
     x = coordinate[0]
     y = coordinate[1]
@@ -106,30 +103,55 @@ import os
 import sys
 import pandas as pd
 class SimulationData(Dataset):
-    def __init__(self, directory="./data/data_file", fileName="aw=1.3_internal.csv", stencilNum=10, samplePerStencil=10, override=False):
-        a = pd.read_csv(f'{directory}/{fileName}')
-        filter_cols = ["Cx", "Cy", "Cz", "Ux", "Uy", "Uz", "V", "epsilon", "k", "mag(U)", "nut", "p", "yPlus", "Sfn", "Points:0", "Points:1", "Points:2"]
-        self.xy = a[filter_cols].values
-        self.initialCleanup()
-        np.random.seed(1234)
-        np.random.shuffle(self.xy)
-        self.y = self.normalize(self.xy[:,[5,6,8]])
-        self.x = self.xy[:,[0,1,2,3,4,7,9,10,11,12,13]]
-        self.original_x = self.x
-        self.original_y = self.y
-        if stencilNum == -1:
-            stencilNum = self.num_samples
-        self.generateData(stencilNum,samplePerStencil, directory, fileName, override)
+    def __init__(self, directory="./data/data_file", fileNames=["aw=1.3_internal.csv", "aw=1.7_internal.csv"], stencilNum=10, samplePerStencil=10, override=False):
+        filter_cols = ["Cx", "Cy", "Cz", "Ux", "Uy", "V", "epsilon", "k", "mag(U)", "nut", "p", "yPlus", "Sfn", "Points:0", "Points:1", "Points:2"]
+        y_filter = ["epsilon", "k", "nut"]
+        x_filter = ["Cx", "Cy", "Ux", "Uy", "V", "mag(U)", "p", "yPlus", "Sfn", "Points:0", "Points:1"]
+        self.files = fileNames
+        self.dfs = {}
+        self.ydf = {}
+        self.xdf = {}
+        self.df_shuffled = {}
+        self.ydf_shuffled  = {}
+        self.xdf_shuffled = {}
+        self.ydf_normalized = {}
+        self.xdf_normalized = {}
+        self.file_y = {}
+        self.file_x = {}
+        self.centers = {}
+        for fileName in fileNames:
+            a = pd.read_csv(f'{directory}/{fileName}')
+
+            self.dfs[fileName] = a[filter_cols]
+
+            #remove points where z coordinate is non-zero
+            self.dfs[fileName] = self.dfs[fileName][self.dfs[fileName]["Points:2"] != 0].reset_index()
+
+            self.ydf[fileName] = self.dfs[fileName][y_filter]
+            self.xdf[fileName] = self.dfs[fileName][x_filter]
+
+            self.df_shuffled[fileName] = self.dfs[fileName].sample(frac=1, random_state=1234)
+            self.ydf_shuffled[fileName] = self.df_shuffled[fileName][y_filter]
+            self.xdf_shuffled[fileName] = self.df_shuffled[fileName][x_filter]
+            
+            self.ydf_normalized[fileName] = self.standard_scaler(self.ydf_shuffled[fileName])
+            self.xdf_normalized[fileName] = self.xdf_shuffled[fileName]
+
+            if stencilNum == -1:
+                stencilNum = self.num_samples
+            self.generateData(stencilNum,samplePerStencil, directory, fileName, override)
+        self.combineDatasets()
         
         
     def generateData(self, stencilNum, samplePerStencil, directory, fileName, override):
-        h = self.generateHash(self.xy, stencilNum, samplePerStencil)
+        xy = self.df_shuffled[fileName].values
+        h = self.generateHash(xy, stencilNum, samplePerStencil)
         path = self.checkIfHashExist(h, directory)
         if path and not override:
             tensors = torch.load(path)
-            self.x = tensors["x"]
-            self.y = tensors["y"]
-            self.centers = tensors["centers"]
+            self.file_x[fileName] = tensors["x"]
+            self.file_y[fileName] = tensors["y"]
+            self.centers[fileName]  = tensors["centers"]
             return
         
         newX = []
@@ -137,47 +159,63 @@ class SimulationData(Dataset):
         newCenter = []
         
         for i in tqdm(range(stencilNum)):
-            cloudPoints, y, center_point = self.calculateDataForPointCenter(i,samplePerStencil)
+            cloudPoints, y, center_point = self.calculateDataForPointCenter(i,samplePerStencil, self.xdf_normalized[fileName], self.ydf_normalized[fileName])
             if not cloudPoints:
                 i-=1
                 continue
+
             newY.append(y)
             newX.append(cloudPoints)
             newCenter.append(center_point)
             
       
-        self.x = torch.tensor(np.array(newX))
-        self.y = torch.tensor(np.array(newY))
-        self.centers = torch.tensor(np.array(newCenter))
+        self.file_x[fileName] = torch.tensor(np.array(newX))
+        self.file_y[fileName] = torch.tensor(np.array(newY))
+        self.centers[fileName] = torch.tensor(np.array(newCenter))
 
-        torch.save({"x":self.x, "y":self.y, "centers":self.centers}, f'{directory}/{fileName}_{stencilNum}_{samplePerStencil}.{h}.t')
+        torch.save({"x":self.file_x[fileName], "y":self.file_y[fileName], "centers":self.centers[fileName]}, f'{directory}/{fileName}_{stencilNum}_{samplePerStencil}.{h}.t')
         
-    def calculateDataForPointCenter(self, index, samplePerStencil):
-        center_point = self.getCoordinates(index)
-        center_velocity = self.getVelocity(index)
-        l1l2 = self.getL1andL2Vectors(index)
+    def calculateDataForPointCenter(self, index, samplePerStencil, xdf,  ydf):
+        center_point_df = xdf.iloc[index]
+        center_point = center_point_df[["Points:0","Points:1"]].values##self.getCoordinates(index)
+        center_velocity = center_point_df[["Ux", "Uy"]].values#self.getVelocity(index)
+        l1l2 = self.getL1andL2Vectors(center_point, center_velocity)
         if LA.norm(l1l2[0]) == 0: return False, False, False
         data = []
-        y = self.y[index]
+        y = ydf.iloc[index].values.tolist()
         sample_counter = 0
-        for i in range(self.xy.shape[0]):
-            point_coordinates = self.getCoordinates(i)
+        for i in range(xdf.values.shape[0]):
+            sampled_point_df = xdf.iloc[i]
+            point_coordinates = sampled_point_df[["Points:0","Points:1"]].values
             is_in_cloud = checkPoint(point_coordinates,center_point,l1l2)
             if is_in_cloud:
                 if(sample_counter >= samplePerStencil):
                     return data, y, center_point
                 sample_counter += 1
-                velocity = self.getVelocity(i)
+                velocity = sampled_point_df[["Ux", "Uy"]].values
                 x_coord, y_coord = self.calculateRelativeCoordinates(center_point, point_coordinates)
                 vx, vy = self.calculateRelativeSpeed(center_velocity, velocity)
-                Cxyz = self.getC(i)
-                C = self.getC(i)
-                V = self.getV(i)
-                P = self.getP(i)
-                S = self.getS(i)
-                magV = self.getMagV(i)
-                data.append([ *Cxyz,vx, vy,V,P,magV,S, x_coord, y_coord])
+                Cxyz = sampled_point_df[["Cx", "Cy"]].values
+                V = sampled_point_df[["V"]].values
+                P = sampled_point_df[["p"]].values
+                S = sampled_point_df[["Sfn"]].values
+                magV = sampled_point_df[["mag(U)"]].values
+                data.append([ *Cxyz, vx, vy, *V, *P, *magV, *S, x_coord, y_coord])
         return False, False, False
+
+    def combineDatasets(self):
+        self.x = []
+        self.y = []
+        self.all_centers = []
+        for key in self.file_x.keys():
+            self.x.extend(self.file_x[key].tolist())
+            self.y.extend(self.file_y[key].tolist()) 
+            self.all_centers.extend(self.centers[key].tolist())
+        self.x = torch.tensor(np.array(self.x))
+        self.y = torch.tensor(np.array(self.y))
+        self.all_centers = torch.tensor(np.array(self.all_centers))
+
+
     
     def calculateRelativeCoordinates(self, center, other):
         x_center = center[0].item()
@@ -231,8 +269,8 @@ class SimulationData(Dataset):
     def getMagV(self, index):
         return self.x[index][5]
         
-    def getCoordinates(self, index):
-        return self.x[index][9:11]
+    def getCoordinates(self, data, index):
+        return data[index][9:11]
     
     def getVelocity(self, index):
         return self.x[index][3:5]
@@ -253,9 +291,8 @@ class SimulationData(Dataset):
             all_l1l2.append(a)
         return np.array(all_l1l2)
     
-    def getL1andL2Vectors(self, index):
-        velocity = self.getVelocity(index).tolist()
-        position = self.getCoordinates(index).tolist()
+    def getL1andL2Vectors(self, position, velocity):
+    
         l1Vect = l1Vector(velocity).tolist()
         l2Vect = l2Vector(velocity).tolist()
         #l1 = centeredL1(l1Vect, position)
@@ -289,8 +326,25 @@ class SimulationData(Dataset):
             self.x[:,:,i] = torch.tensor(transformer.inverse_transform(self.x[:,:,i]))
         self.y = torch.tensor(self.label_transformer.inverse_transform(self.y))   
 
-    def normalize(self, y):
+    def _transform(self, y, transformer):
+        a = transformer.fit_transform(y.values)
+        return pd.DataFrame(a, columns=y.columns, index=y.index) 
+
+    def scale(self, y):
         from sklearn.preprocessing import MinMaxScaler
         scaler = MinMaxScaler(feature_range=(0, 1))
-        a = scaler.fit_transform(y)
-        return a    
+        return self._transform(y, scaler)
+
+    def normalize(self, y):
+        from sklearn.preprocessing import Normalizer
+        normalizer = Normalizer()
+        return self._transform(y, normalizer)
+    
+    def standard_scaler(self, y):
+        from sklearn.preprocessing import StandardScaler
+        scaler = StandardScaler()
+        return self._transform(y, scaler)
+        
+
+#dataset = SimulationData(stencilNum=10,samplePerStencil=50, override=True)
+
